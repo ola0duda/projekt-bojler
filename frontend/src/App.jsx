@@ -1,113 +1,456 @@
-import React, { useState } from 'react';
+import { useDeferredValue, useEffect, useState, useTransition } from "react";
+import GraphCanvas from "./components/GraphCanvas";
+import { SAMPLE_TASKS } from "./sampleTasks";
 
-function App() {
-  //stan przechowujący listę zadań
-  const [tasks, setTasks] = useState([]);
-  //stany dla pól formularza
-  const [name, setName] = useState('');
-  const [duration, setDuration] = useState('');
+const INITIAL_FORM = {
+  name: "",
+  duration: "",
+  dependencies: [],
+};
 
-  const addTask = (e) => {
-    e.preventDefault();
+const VIEW_MODES = [
+  { id: "dependency", label: "Siec zaleznosci" },
+  { id: "es", label: "ASAP" },
+  { id: "ls", label: "ALAP" },
+];
 
-    //walidacja
-    if (name.trim().length === 0) {
-      alert("Podaj nazwę zadania.");
+function cloneTasks(tasks) {
+  return tasks.map((task) => ({
+    ...task,
+    dependencies: [...task.dependencies],
+  }));
+}
+
+function getNextTaskId(tasks) {
+  const usedIds = new Set(tasks.map((task) => task.id));
+  let index = 1;
+
+  while (usedIds.has(`T${index}`)) {
+    index += 1;
+  }
+
+  return `T${index}`;
+}
+
+function formatDependencies(dependencies) {
+  if (dependencies.length === 0) {
+    return "brak";
+  }
+
+  return dependencies.join(", ");
+}
+
+function getStatusLabel(status) {
+  if (status === "loading") {
+    return "Obliczenia w toku";
+  }
+
+  if (status === "error") {
+    return "Brak polaczenia z backendem";
+  }
+
+  if (status === "ready") {
+    return "Wyniki aktualne";
+  }
+
+  return "Czeka na dane";
+}
+
+export default function App() {
+  const [tasks, setTasks] = useState(() => cloneTasks(SAMPLE_TASKS));
+  const [form, setForm] = useState(INITIAL_FORM);
+  const [analysis, setAnalysis] = useState(null);
+  const [error, setError] = useState("");
+  const [apiState, setApiState] = useState("idle");
+  const [viewMode, setViewMode] = useState("dependency");
+  const [isPending, startTransition] = useTransition();
+  const deferredTasks = useDeferredValue(tasks);
+
+  useEffect(() => {
+    if (deferredTasks.length === 0) {
+      setAnalysis(null);
+      setError("");
+      setApiState("idle");
+      return undefined;
+    }
+
+    const controller = new AbortController();
+
+    async function analyzeTasks() {
+      setApiState("loading");
+
+      try {
+        const response = await fetch("/api/cpm/analyze", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ tasks: deferredTasks }),
+          signal: controller.signal,
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.message || "Nie udalo sie policzyc harmonogramu.");
+        }
+
+        setAnalysis(data);
+        setError("");
+        setApiState("ready");
+      } catch (requestError) {
+        if (requestError.name === "AbortError") {
+          return;
+        }
+
+        setAnalysis(null);
+        setError(requestError.message);
+        setApiState("error");
+      }
+    }
+
+    analyzeTasks();
+
+    return () => {
+      controller.abort();
+    };
+  }, [deferredTasks]);
+
+  function toggleDependency(taskId) {
+    setForm((currentForm) => {
+      const alreadySelected = currentForm.dependencies.includes(taskId);
+
+      return {
+        ...currentForm,
+        dependencies: alreadySelected
+          ? currentForm.dependencies.filter((dependencyId) => dependencyId !== taskId)
+          : [...currentForm.dependencies, taskId],
+      };
+    });
+  }
+
+  function handleSubmit(event) {
+    event.preventDefault();
+
+    const trimmedName = form.name.trim();
+    const duration = Number(form.duration);
+
+    if (!trimmedName) {
+      setError("Podaj nazwe zadania.");
       return;
     }
-    if (duration <= 0) {
-      alert("Czas trwania musi być liczbą większą od 0.");
+
+    if (!Number.isFinite(duration) || duration <= 0) {
+      setError("Czas trwania musi byc dodatnia liczba.");
       return;
     }
 
     const newTask = {
-      id: Date.now(), //unikalne id na podstawie czasu
-      name: name,
-      duration: parseInt(duration),
+      id: getNextTaskId(tasks),
+      name: trimmedName,
+      duration,
+      dependencies: [...form.dependencies],
     };
 
-    setTasks([...tasks, newTask]); //dodanie zadania do listy
-    setName(''); //czyszczenie pola nazwy
-    setDuration(''); //czyszczenie pola czasu
-  };
+    startTransition(() => {
+      setTasks((currentTasks) => [...currentTasks, newTask]);
+    });
 
-  const removeTask = (id) => {
-    setTasks(tasks.filter(task => task.id !== id));
-  };
+    setForm(INITIAL_FORM);
+    setError("");
+  }
+
+  function removeTask(taskId) {
+    startTransition(() => {
+      setTasks((currentTasks) =>
+        currentTasks
+          .filter((task) => task.id !== taskId)
+          .map((task) => ({
+            ...task,
+            dependencies: task.dependencies.filter((dependencyId) => dependencyId !== taskId),
+          }))
+      );
+    });
+  }
+
+  function loadSampleTasks() {
+    startTransition(() => {
+      setTasks(cloneTasks(SAMPLE_TASKS));
+      setViewMode("dependency");
+    });
+  }
+
+  function clearTasks() {
+    startTransition(() => {
+      setTasks([]);
+      setViewMode("dependency");
+    });
+  }
+
+  const analysisTasks = analysis?.tasks ?? [];
+  const criticalCount = analysis?.criticalTaskIds?.length ?? 0;
+  const edgeCount = analysis?.edges?.length ?? 0;
 
   return (
-    <div className="min-h-screen bg-slate-300 p-4 md:p-10 font-sans">
-      <div className="max-w-3xl mx-auto bg-white shadow-xl rounded-2xl overflow-hidden">
-        
-        {/* nagłówek */}
-        <div className="bg-pink-500 p-6">
-          <h1 className="text-white text-2xl font-bold text-center">
-            projekt bojler (Metoda CPM)
-          </h1>
-        </div>
+    <div className="page-shell">
+      <div className="page-gradient" />
+      <main className="app-shell">
+        <section className="hero-card">
+          <div>
+            <span className="eyebrow">React frontend + Node.js backend</span>
+            <h1>Analizator CPM do backlogu projektu bojler</h1>
+            <p className="hero-copy">
+              Wersja przegladarkowa pokrywajaca elementy przypisane Mateuszowi Adamczakowi:
+              liczenie ES/EF/LS/LF, generacje ukladu grafu, rysowanie polaczen oraz widoki
+              ASAP i ALAP.
+            </p>
+          </div>
 
-        <div className="p-6">
-          {/* wprowadzanie danych */}
-          <section className="mb-10">
-            <h2 className="text-lg font-semibold text-slate-700 mb-4">Dodaj nowe zadanie:</h2>
-            <form onSubmit={addTask} className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <input
-                type="text"
-                placeholder="Nazwa"
-                className="p-3 border-2 border-slate-200 rounded-xl focus:border-blue-500 outline-none transition-all"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-              />
-              <input
-                type="number"
-                placeholder="Czas (dni)"
-                className="p-3 border-2 border-slate-200 rounded-xl focus:border-blue-500 outline-none transition-all"
-                value={duration}
-                onChange={(e) => setDuration(e.target.value)}
-              />
-              <button
-                type="submit"
-                className="bg-purple-500 hover:bg-pink-500 text-white font-bold py-3 rounded-xl transition-colors shadow-lg shadow-emerald-200"
-              >
-                Dodaj do listy +
-              </button>
-            </form>
-          </section>
+          <div className="hero-actions">
+            <button type="button" className="primary-button" onClick={loadSampleTasks}>
+              Wczytaj dane demo
+            </button>
+            <button type="button" className="secondary-button" onClick={clearTasks}>
+              Wyczysc harmonogram
+            </button>
+          </div>
+        </section>
 
-          <hr className="border-slate-100 mb-8" />
-
-          {/* wyświetlanie listy */}
-          <section>
-            <h2 className="text-lg font-semibold text-slate-700 mb-4">Zdefiniowane czynności:</h2>
-            {tasks.length === 0 ? (
-              <div className="text-center py-10 bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200 text-slate-400">
-                Lista jest pusta. Dodaj pierwsze zadanie.
+        <section className="dashboard-grid">
+          <div className="stack-column">
+            <article className="panel">
+              <div className="panel-heading">
+                <div>
+                  <span className="panel-kicker">Wejscie danych</span>
+                  <h2>Dodaj nowe zadanie</h2>
+                </div>
+                <span className={`status-pill ${apiState}`}>{getStatusLabel(apiState)}</span>
               </div>
-            ) : (
-              <div className="grid gap-3">
-                {tasks.map((task) => (
-                  <div key={task.id} className="flex items-center justify-between p-4 bg-white border border-slate-200 rounded-xl hover:shadow-md transition-shadow">
-                    <div className="flex flex-col">
-                      <span className="font-bold text-slate-800 uppercase tracking-wide">{task.name}</span>
-                      <span className="text-sm text-slate-500">Czas trwania: <b className="text-blue-600">{task.duration} dni</b></span>
-                    </div>
-                    <button
-                      onClick={() => removeTask(task.id)}
-                      className="bg-red-50 hover:bg-red-100 text-red-500 p-2 rounded-lg transition-colors"
-                      title="Usuń zadanie"
-                    >
-                      🗑️
-                    </button>
+
+              <form className="task-form" onSubmit={handleSubmit}>
+                <label className="field">
+                  <span>Nazwa zadania</span>
+                  <input
+                    type="text"
+                    value={form.name}
+                    onChange={(event) =>
+                      setForm((currentForm) => ({
+                        ...currentForm,
+                        name: event.target.value,
+                      }))
+                    }
+                    placeholder="np. Wygenerowanie harmonogramu"
+                  />
+                </label>
+
+                <label className="field">
+                  <span>Czas trwania (dni)</span>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={form.duration}
+                    onChange={(event) =>
+                      setForm((currentForm) => ({
+                        ...currentForm,
+                        duration: event.target.value,
+                      }))
+                    }
+                    placeholder="3"
+                  />
+                </label>
+
+                <div className="field">
+                  <span>Poprzedniki</span>
+                  <div className="dependency-selector">
+                    {tasks.length === 0 ? (
+                      <p className="helper-copy">
+                        Najpierw dodaj pierwsze zadanie bez poprzednikow.
+                      </p>
+                    ) : (
+                      tasks.map((task) => (
+                        <label key={task.id} className="dependency-option">
+                          <input
+                            type="checkbox"
+                            checked={form.dependencies.includes(task.id)}
+                            onChange={() => toggleDependency(task.id)}
+                          />
+                          <span>
+                            {task.id} · {task.name}
+                          </span>
+                        </label>
+                      ))
+                    )}
                   </div>
+                </div>
+
+                <button type="submit" className="primary-button submit-button">
+                  Dodaj zadanie
+                </button>
+              </form>
+
+              {error && <div className="error-banner">{error}</div>}
+            </article>
+
+            <article className="panel">
+              <div className="panel-heading">
+                <div>
+                  <span className="panel-kicker">Model projektu</span>
+                  <h2>Aktualne zadania</h2>
+                </div>
+                <span className="panel-count">{tasks.length} szt.</span>
+              </div>
+
+              {tasks.length === 0 ? (
+                <div className="empty-state">
+                  Lista jest pusta. Dodaj wlasne zadania albo uruchom zestaw demo.
+                </div>
+              ) : (
+                <div className="task-list">
+                  {tasks.map((task) => (
+                    <article key={task.id} className="task-card">
+                      <div className="task-card-head">
+                        <div>
+                          <span className="task-id">{task.id}</span>
+                          <h3>{task.name}</h3>
+                        </div>
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() => removeTask(task.id)}
+                        >
+                          Usun
+                        </button>
+                      </div>
+                      <dl className="task-meta">
+                        <div>
+                          <dt>Czas</dt>
+                          <dd>{task.duration} dni</dd>
+                        </div>
+                        <div>
+                          <dt>Poprzedniki</dt>
+                          <dd>{formatDependencies(task.dependencies)}</dd>
+                        </div>
+                      </dl>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </article>
+          </div>
+
+          <div className="stack-column">
+            <article className="panel">
+              <div className="panel-heading">
+                <div>
+                  <span className="panel-kicker">Podsumowanie CPM</span>
+                  <h2>Kluczowe wskazniki</h2>
+                </div>
+                {isPending && <span className="panel-note">Aktualizacja widoku...</span>}
+              </div>
+
+              <div className="stats-grid">
+                <div className="stat-card">
+                  <span>Projekt duration</span>
+                  <strong>{analysis?.projectDuration ?? 0}</strong>
+                  <small>dni lacznie</small>
+                </div>
+                <div className="stat-card">
+                  <span>Zadania krytyczne</span>
+                  <strong>{criticalCount}</strong>
+                  <small>Slack = 0</small>
+                </div>
+                <div className="stat-card">
+                  <span>Polaczenia grafu</span>
+                  <strong>{edgeCount}</strong>
+                  <small>krawedzie miedzy zadaniami</small>
+                </div>
+              </div>
+            </article>
+
+            <article className="panel">
+              <div className="panel-heading">
+                <div>
+                  <span className="panel-kicker">Wizualizacja</span>
+                  <h2>Graf zaleznosci i harmonogram</h2>
+                </div>
+              </div>
+
+              <div className="view-switcher" role="tablist" aria-label="Tryb grafu">
+                {VIEW_MODES.map((mode) => (
+                  <button
+                    key={mode.id}
+                    type="button"
+                    className={viewMode === mode.id ? "view-pill active" : "view-pill"}
+                    onClick={() => setViewMode(mode.id)}
+                  >
+                    {mode.label}
+                  </button>
                 ))}
               </div>
-            )}
-          </section>
 
-        </div>
-      </div>
+              <GraphCanvas
+                tasks={analysisTasks}
+                edges={analysis?.edges ?? []}
+                layout={analysis?.layouts?.[viewMode]}
+                layoutConfig={analysis?.layoutConfig}
+                mode={viewMode}
+                projectDuration={analysis?.projectDuration ?? 0}
+              />
+            </article>
+          </div>
+        </section>
+
+        <section className="panel metrics-panel">
+          <div className="panel-heading">
+            <div>
+              <span className="panel-kicker">Tabela wynikow</span>
+              <h2>ES / EF / LS / LF / Slack</h2>
+            </div>
+          </div>
+
+          {analysisTasks.length === 0 ? (
+            <div className="empty-state">Po uruchomieniu analizy tutaj pojawia sie tabela czasow.</div>
+          ) : (
+            <div className="table-scroll">
+              <table className="metrics-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Zadanie</th>
+                    <th>Czas</th>
+                    <th>ES</th>
+                    <th>EF</th>
+                    <th>LS</th>
+                    <th>LF</th>
+                    <th>Slack</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {analysisTasks.map((task) => (
+                    <tr key={task.id}>
+                      <td>{task.id}</td>
+                      <td>{task.name}</td>
+                      <td>{task.duration}</td>
+                      <td>{task.es}</td>
+                      <td>{task.ef}</td>
+                      <td>{task.ls}</td>
+                      <td>{task.lf}</td>
+                      <td>{task.slack}</td>
+                      <td>
+                        <span className={task.isCritical ? "table-badge critical" : "table-badge"}>
+                          {task.isCritical ? "Krytyczne" : "Bufor"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      </main>
     </div>
   );
 }
-
-export default App;

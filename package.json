@@ -1,4 +1,11 @@
 {
+  "name": "projekt-bojler",
+  "private": true,
+  "scripts": {
+    "dev:backend": "node backend/server.js",
+    "dev:frontend": "cmd /c npm run dev --prefix frontend",
+    "build:frontend": "cmd /c npm run build --prefix frontend"
+  },
   "devDependencies": {
     "autoprefixer": "^10.4.27",
     "postcss": "^8.5.8",
