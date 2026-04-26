@@ -57,7 +57,11 @@ function getStatusLabel(status) {
 }
 
 export default function App() {
-  const [tasks, setTasks] = useState(() => cloneTasks(SAMPLE_TASKS));
+  const [tasks, setTasks] = useState(() => {
+   const savedTasks = localStorage.getItem("cpm-project-data");
+   return savedTasks ? JSON.parse(savedTasks) : cloneTasks(SAMPLE_TASKS);
+ });
+
   const [form, setForm] = useState(INITIAL_FORM);
   const [analysis, setAnalysis] = useState(null);
   const [error, setError] = useState("");
@@ -65,6 +69,11 @@ export default function App() {
   const [viewMode, setViewMode] = useState("dependency");
   const [isPending, startTransition] = useTransition();
   const deferredTasks = useDeferredValue(tasks);
+
+
+  useEffect(() => {
+  localStorage.setItem("cpm-project-data", JSON.stringify(tasks));
+}, [tasks]);
 
   useEffect(() => {
     if (deferredTasks.length === 0) {
@@ -129,6 +138,67 @@ export default function App() {
     });
   }
 
+  //---EKSPORT DANYCH---
+  // EKSPORT DO CSV
+function exportToCSV() {
+    if (!analysis || !analysis.tasks) {
+      alert("Najpierw dodaj zadania i poczekaj na wyniki analizy, aby móc je wyeksportować.");
+      return;
+    }
+
+    const summaryHeader = [["PODSUMOWANIE PROJEKTU"]];
+    const summaryData = [
+      ["Czas trwania projektu", `${analysis.projectDuration} dni`],
+      ["Sciezka krytyczna", analysis.criticalPath.join(" -> ")],
+      ["Liczba polaczen", analysis.edges.length],
+      [""]
+    ];
+
+    const tableHeaders = [
+      "ID", 
+      "Nazwa zadania", 
+      "Czas trwania", 
+      "Poprzedniki", 
+      "ES (Early Start)", 
+      "EF (Early Finish)", 
+      "LS (Late Start)", 
+      "LF (Late Finish)", 
+      "Luz (Slack)", 
+      "Czy krytyczne"
+    ];
+
+    const dataRows = analysis.tasks.map(task => [
+      task.id,
+      task.name,
+      task.duration,
+      task.dependencies.join(","), 
+      task.es,
+      task.ef,
+      task.ls,
+      task.lf,
+      task.slack,
+      task.isCritical ? "TAK" : "NIE"
+    ]);
+
+    const csvContent = [
+      ...summaryHeader.map(e => e.join(";")),
+      ...summaryData.map(e => e.join(";")),
+      tableHeaders.join(";"),
+      ...dataRows.map(row => row.join(";"))
+    ].join("\n");
+
+    const blob = new Blob(["\ufeff" + csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    
+    link.href = url;
+    link.download = `cpm_analiza_wynikow_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
   function handleSubmit(event) {
     event.preventDefault();
 
@@ -173,6 +243,9 @@ export default function App() {
     });
   }
 
+
+
+
   function loadSampleTasks() {
     startTransition(() => {
       setTasks(cloneTasks(SAMPLE_TASKS));
@@ -197,12 +270,10 @@ export default function App() {
       <main className="app-shell">
         <section className="hero-card">
           <div>
-            <span className="eyebrow">React frontend + Node.js backend</span>
-            <h1>Analizator CPM do backlogu projektu bojler</h1>
+            
+            <h1>Metoda CPM</h1>
             <p className="hero-copy">
-              Wersja przegladarkowa pokrywajaca elementy przypisane Mateuszowi Adamczakowi:
-              liczenie ES/EF/LS/LF, generacje ukladu grafu, rysowanie polaczen oraz widoki
-              ASAP i ALAP.
+              
             </p>
           </div>
 
@@ -210,9 +281,15 @@ export default function App() {
             <button type="button" className="primary-button" onClick={loadSampleTasks}>
               Wczytaj dane demo
             </button>
+
             <button type="button" className="secondary-button" onClick={clearTasks}>
               Wyczysc harmonogram
             </button>
+
+             <button type="button" className="secondary-button" onClick={exportToCSV}>
+                Pobierz CSV 
+            </button>
+
           </div>
         </section>
 
